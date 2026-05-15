@@ -2,13 +2,13 @@
   "name": "hono-github-tracker",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "wrangler dev src/index.ts --port 8787",
     "build": "vite build --mode client && vite build",
-    "preview": "bun run build && wrangler pages dev",
+    "preview": "pnpm run build && wrangler pages dev",
     "deploy": "$npm_execpath run build && wrangler pages deploy",
-    "studio": "bunx @fiberplane/studio@canary",
-    "db:generate": "bun drizzle-kit generate",
-    "db:migrate": "bun drizzle-kit migrate",
+    "studio": "pnpm dlx @fiberplane/studio@canary",
+    "db:generate": "pnpm drizzle-kit generate",
+    "db:migrate": "pnpm drizzle-kit migrate",
     "lint": "biome lint",
     "format": "biome format --write",
     "type-check": "tsc",
@@ -47,5 +47,5 @@
     "typescript": "^5.6.2",
     "wrangler": "^3.80.1"
   },
-  "packageManager": "bun@1.1.20"
+  "packageManager": "pnpm@9.0.0"
 }
