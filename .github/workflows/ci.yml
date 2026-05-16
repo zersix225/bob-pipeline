@@ -1,0 +1,39 @@
+name: CI — BobOps Demo Pipeline
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run demo tests
+        id: run_tests
+        run: node --test demo/broken_code.test.js
+        continue-on-error: true
+
+      - name: Trigger BobOps on failure
+        if: steps.run_tests.outcome == 'failure'
+        run: |
+          curl -s -X POST "${{ secrets.BOBOPS_WEBHOOK_URL }}/api/bobops/trigger" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"repo\": \"${{ github.repository }}\",
+              \"branch\": \"${{ github.ref_name }}\",
+              \"commit\": \"${{ github.sha }}\",
+              \"run_id\": \"${{ github.run_id }}\"
+            }"
+        continue-on-error: true
+
+      - name: Fail the job
+        if: steps.run_tests.outcome == 'failure'
+        run: exit 1
