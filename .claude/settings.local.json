@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"D:\\\\laptop\\\\Hackathon\\\\bob-pipeline\" -Recurse -Force)",
+      "Bash(Select-Object -Property FullName, PSIsContainer)",
+      "Bash(Sort-Object FullName)",
+      "Bash(ConvertTo-Json -Depth 100)",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\laptop\\\\Hackathon\\\\bob-pipeline\" -Recurse -Force | Select-Object -Property FullName, @{Name='IsDir';Expression={$_.PSIsContainer}} | Sort-Object FullName | ConvertTo-Json -Depth 100)",
+      "Bash(pnpm type-check *)"
+    ]
+  }
+}

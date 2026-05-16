@@ -1,0 +1,175 @@
+import { Octokit } from "@octokit/core";
+
+import type { BobAnalysis, PipelineContext } from "./types";
+
+export async function fetchPipelineContext(
+  token: string,
+  owner: string,
+  repo: string,
+  runId: number,
+  headSha: string,
+  headBranch: string,
+): Promise<PipelineContext> {
+  const octokit = new Octokit({ auth: token });
+
+  // Find failed job to get its logs
+  const jobsRes = await octokit.request(
+    "GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+    { owner, repo, run_id: runId },
+  );
+  const failedJob = jobsRes.data.jobs.find((j) => j.conclusion === "failure");
+
+  // Fetch logs for the failed job (text format, not zip)
+  let logs = "No logs available";
+  if (failedJob) {
+    try {
+      const logsRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/actions/jobs/${failedJob.id}/logs`,
+        {
+          headers: {
+            Authorization: `token ${token}`,
+            "User-Agent": "BobOps/1.0",
+          },
+          redirect: "follow",
+        },
+      );
+      const rawLogs = await logsRes.text();
+      logs = rawLogs.slice(-8000);
+    } catch {
+      logs = `Failed to fetch logs for job ${failedJob.id}`;
+    }
+  }
+
+  // Fetch diff of changed files in the commit
+  const changedFiles: Record<string, string> = {};
+  try {
+    const commitRes = await octokit.request(
+      "GET /repos/{owner}/{repo}/commits/{ref}",
+      { owner, repo, ref: headSha },
+    );
+    for (const file of commitRes.data.files ?? []) {
+      if (file.patch) changedFiles[file.filename] = file.patch;
+    }
+  } catch {
+    // non-critical, continue without changed files
+  }
+
+  // Fetch flat repo tree for full context
+  let repoTree = "";
+  try {
+    const treeRes = await octokit.request(
+      "GET /repos/{owner}/{repo}/git/trees/{tree_sha}",
+      { owner, repo, tree_sha: headSha, recursive: "1" },
+    );
+    repoTree = (treeRes.data.tree as Array<{ type?: string; path?: string }>)
+      .filter((item) => item.type === "blob")
+      .map((item) => item.path ?? "")
+      .join("\n");
+  } catch {
+    // non-critical
+  }
+
+  return {
+    repoFullName: `${owner}/${repo}`,
+    owner,
+    repo,
+    branch: headBranch,
+    commitSha: headSha,
+    runId,
+    logs,
+    changedFiles,
+    repoTree,
+  };
+}
+
+export async function createFixPR(
+  token: string,
+  owner: string,
+  repo: string,
+  analysis: BobAnalysis,
+  commitSha: string,
+): Promise<{ url: string; autoMerged: boolean }> {
+  const octokit = new Octokit({ auth: token });
+  const branchName = `bobops/auto-fix-${commitSha.slice(0, 7)}`;
+  const fix = analysis.fix;
+
+  // Get main branch HEAD SHA
+  const baseRef = await octokit.request(
+    "GET /repos/{owner}/{repo}/git/ref/{ref}",
+    { owner, repo, ref: "heads/main" },
+  );
+
+  // Create fix branch
+  await octokit.request("POST /repos/{owner}/{repo}/git/refs", {
+    owner,
+    repo,
+    ref: `refs/heads/${branchName}`,
+    sha: baseRef.data.object.sha,
+  });
+
+  // Fetch current file content and apply fix
+  const fileRes = (await octokit.request(
+    "GET /repos/{owner}/{repo}/contents/{path}",
+    { owner, repo, path: fix.filename, ref: branchName },
+  )) as { data: { sha: string; content: string } };
+
+  // Decode base64 content using Buffer (nodejs_compat enabled in wrangler.toml)
+  const oldContent = Buffer.from(
+    fileRes.data.content.replace(/\n/g, ""),
+    "base64",
+  ).toString("utf-8");
+  const newContent = oldContent.replace(fix.old_code, fix.new_code);
+
+  // Encode back to base64
+  const newContentBase64 = Buffer.from(newContent, "utf-8").toString("base64");
+
+  await octokit.request("PUT /repos/{owner}/{repo}/contents/{path}", {
+    owner,
+    repo,
+    path: fix.filename,
+    message: `🤖 BobOps: Auto-fix pipeline failure (confidence: ${analysis.confidence}%)`,
+    content: newContentBase64,
+    sha: fileRes.data.sha,
+    branch: branchName,
+  });
+
+  // Open PR
+  const pr = await octokit.request("POST /repos/{owner}/{repo}/pulls", {
+    owner,
+    repo,
+    title: `🤖 [BobOps] ${analysis.root_cause.slice(0, 60)}`,
+    body: buildPRBody(analysis),
+    head: branchName,
+    base: "main",
+  });
+
+  // Auto-merge when confidence is very high
+  if (analysis.confidence >= 90) {
+    try {
+      await octokit.request(
+        "PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge",
+        { owner, repo, pull_number: pr.data.number, merge_method: "squash" },
+      );
+      return { url: pr.data.html_url, autoMerged: true };
+    } catch {
+      // branch protection may block auto-merge — fall through to return PR URL
+    }
+  }
+
+  return { url: pr.data.html_url, autoMerged: false };
+}
+
+function buildPRBody(analysis: BobAnalysis): string {
+  return `## 🤖 BobOps Auto-Fix
+
+**Root Cause:** ${analysis.root_cause}
+
+**Confidence:** ${analysis.confidence}%
+
+**Affected Areas:** ${analysis.affected_areas.join(", ")}
+
+**Explanation:** ${analysis.explanation}
+
+---
+*Generated by IBM watsonx.ai via BobOps*`;
+}
