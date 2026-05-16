@@ -12,7 +12,7 @@ api.post("/github/webhook", async (c) => {
 
   webhooks.on("workflow_run.completed", ({ payload }) => {
     if (payload.workflow_run.conclusion === "failure") {
-      console.log("Workflow failed");
+      console.log("Workflow failed", payload);
     }
   });
 
@@ -20,6 +20,7 @@ api.post("/github/webhook", async (c) => {
     ["fork", "issues.opened", "star.created", "watch.started"],
     ({ name, payload }) => {
       console.log("event:", name);
+      console.log("payload:",payload);
     },
   );
 });
