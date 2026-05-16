@@ -110,56 +110,99 @@ export async function createFixPR(
     baseRef.data.object.sha,
   );
 
-  // Fetch current file content and apply fix
-  const fileRes = (await octokit.request(
-    "GET /repos/{owner}/{repo}/contents/{path}",
-    { owner, repo, path: fix.filename, ref: branchName },
-  )) as { data: { sha: string; content: string } };
-
-  // Decode base64 content using Buffer (nodejs_compat enabled in wrangler.toml)
-  const oldContent = Buffer.from(
-    fileRes.data.content.replace(/\n/g, ""),
-    "base64",
-  ).toString("utf-8");
-  const newContent = oldContent.replace(fix.old_code, fix.new_code);
-
-  // Encode back to base64
-  const newContentBase64 = Buffer.from(newContent, "utf-8").toString("base64");
-
-  await octokit.request("PUT /repos/{owner}/{repo}/contents/{path}", {
-    owner,
-    repo,
-    path: fix.filename,
-    message: `🤖 BobOps: Auto-fix pipeline failure (confidence: ${analysis.confidence}%)`,
-    content: newContentBase64,
-    sha: fileRes.data.sha,
-    branch: branchName,
-  });
-
-  // Open PR
-  const pr = await octokit.request("POST /repos/{owner}/{repo}/pulls", {
-    owner,
-    repo,
-    title: `🤖 [BobOps] ${analysis.root_cause.slice(0, 60)}`,
-    body: buildPRBody(analysis),
-    head: branchName,
-    base: "main",
-  });
-
-  // Auto-merge when confidence is very high
-  if (analysis.confidence >= 90) {
+  // Anything that fails after the branch is created should clean up the
+  // orphan branch so we don't leak refs on every failed healing attempt.
+  try {
+    // Fetch current file content and apply fix
+    let fileRes: { data: { sha: string; content: string } };
     try {
-      await octokit.request(
-        "PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge",
-        { owner, repo, pull_number: pr.data.number, merge_method: "squash" },
-      );
-      return { url: pr.data.html_url, autoMerged: true };
-    } catch {
-      // branch protection may block auto-merge — fall through to return PR URL
+      fileRes = (await octokit.request(
+        "GET /repos/{owner}/{repo}/contents/{path}",
+        { owner, repo, path: fix.filename, ref: branchName },
+      )) as { data: { sha: string; content: string } };
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) {
+        throw new Error(
+          `Proposed fix targets "${fix.filename}", which does not exist in ${owner}/${repo}@${branchName}. Skipping fix - analyzer needs to propose a path that exists in the repo.`,
+        );
+      }
+      throw err;
     }
-  }
 
-  return { url: pr.data.html_url, autoMerged: false };
+    // Decode base64 content using Buffer (nodejs_compat enabled in wrangler.toml)
+    const oldContent = Buffer.from(
+      fileRes.data.content.replace(/\n/g, ""),
+      "base64",
+    ).toString("utf-8");
+    const newContent = oldContent.replace(fix.old_code, fix.new_code);
+
+    if (newContent === oldContent) {
+      throw new Error(
+        `Proposed fix did not change "${fix.filename}" — old_code snippet was not found in the file. Skipping fix.`,
+      );
+    }
+
+    // Encode back to base64
+    const newContentBase64 = Buffer.from(newContent, "utf-8").toString("base64");
+
+    await octokit.request("PUT /repos/{owner}/{repo}/contents/{path}", {
+      owner,
+      repo,
+      path: fix.filename,
+      message: `🤖 BobOps: Auto-fix pipeline failure (confidence: ${analysis.confidence}%)`,
+      content: newContentBase64,
+      sha: fileRes.data.sha,
+      branch: branchName,
+    });
+
+    // Open PR
+    const pr = await octokit.request("POST /repos/{owner}/{repo}/pulls", {
+      owner,
+      repo,
+      title: `🤖 [BobOps] ${analysis.root_cause.slice(0, 60)}`,
+      body: buildPRBody(analysis),
+      head: branchName,
+      base: "main",
+    });
+
+    // Auto-merge when confidence is very high
+    if (analysis.confidence >= 90) {
+      try {
+        await octokit.request(
+          "PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge",
+          { owner, repo, pull_number: pr.data.number, merge_method: "squash" },
+        );
+        return { url: pr.data.html_url, autoMerged: true };
+      } catch {
+        // branch protection may block auto-merge — fall through to return PR URL
+      }
+    }
+
+    return { url: pr.data.html_url, autoMerged: false };
+  } catch (err) {
+    await deleteBranchQuiet(octokit, owner, repo, branchName);
+    throw err;
+  }
+}
+
+async function deleteBranchQuiet(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  branchName: string,
+): Promise<void> {
+  try {
+    await octokit.request("DELETE /repos/{owner}/{repo}/git/refs/{ref}", {
+      owner,
+      repo,
+      ref: `heads/${branchName}`,
+    });
+  } catch (cleanupErr) {
+    console.warn(
+      `[bobops] failed to clean up orphan branch ${branchName}:`,
+      cleanupErr,
+    );
+  }
 }
 
 async function createUniqueFixBranch(
