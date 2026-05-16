@@ -28,7 +28,7 @@ export async function analyzeWithWatsonX(
   baseUrl: string,
 ): Promise<BobAnalysis> {
   if (!apiKey || !projectId) {
-    console.warn("WatsonX credentials not configured — using demo stub");
+    console.warn("WatsonX credentials not configured. Using demo stub.");
     return getDemoAnalysis(context);
   }
 
@@ -94,7 +94,13 @@ function buildPrompt(context: PipelineContext): string {
     .map(([file, patch]) => `### ${file}\n${patch.slice(0, 500)}`)
     .join("\n\n");
 
-  return `You are a CI/CD pipeline repair expert. A pipeline has failed. Analyze and return ONLY valid JSON.
+  return `You are Bob, a senior CI/CD pipeline repair engineer. A pipeline has failed. Analyze the inputs and return ONLY valid JSON.
+
+Writing rules for every string field:
+1. Use professional, concise engineering English.
+2. Do not use emojis, decorative icons, or symbol characters.
+3. Do not use em dashes or en dashes. Use periods, commas, or colons instead.
+4. Prefer short declarative sentences. Avoid filler words.
 
 ## Failed Pipeline Logs (last portion):
 ${context.logs.slice(0, 3000)}
@@ -144,7 +150,7 @@ function getDemoAnalysis(context: PipelineContext): BobAnalysis {
   }
 
   return {
-    root_cause: `Pipeline failure in ${context.repo} — WatsonX credentials needed for full analysis`,
+    root_cause: `Pipeline failure in ${context.repo}. WatsonX credentials are required for full analysis.`,
     fix: {
       filename: Object.keys(context.changedFiles)[0] ?? "unknown",
       old_code: "",

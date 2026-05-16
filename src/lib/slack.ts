@@ -7,10 +7,12 @@ export async function notifySlack(
   autoMerged: boolean,
   repo: string,
 ): Promise<void> {
-  const statusEmoji = autoMerged ? "✅" : "👀";
+  const headline = autoMerged
+    ? "BobOps auto merged a fix"
+    : "BobOps opened a fix PR";
   const actionText = autoMerged
-    ? `Auto-merged into main (confidence: ${analysis.confidence}%)`
-    : `PR ready for review (confidence: ${analysis.confidence}%)`;
+    ? `Auto merged into main. Confidence ${analysis.confidence}%.`
+    : `PR ready for review. Confidence ${analysis.confidence}%.`;
 
   await fetch(webhookUrl, {
     method: "POST",
@@ -19,10 +21,7 @@ export async function notifySlack(
       blocks: [
         {
           type: "header",
-          text: {
-            type: "plain_text",
-            text: `${statusEmoji} BobOps Fixed Your Pipeline`,
-          },
+          text: { type: "plain_text", text: headline },
         },
         {
           type: "section",
@@ -41,19 +40,14 @@ export async function notifySlack(
         },
         {
           type: "context",
-          elements: [
-            {
-              type: "mrkdwn",
-              text: analysis.explanation,
-            },
-          ],
+          elements: [{ type: "mrkdwn", text: analysis.explanation }],
         },
         {
           type: "actions",
           elements: [
             {
               type: "button",
-              text: { type: "plain_text", text: "View Pull Request →" },
+              text: { type: "plain_text", text: "View Pull Request" },
               url: prUrl,
               style: "primary",
             },

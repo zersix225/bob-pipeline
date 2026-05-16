@@ -138,7 +138,7 @@ export async function createFixPR(
 
     if (newContent === oldContent) {
       throw new Error(
-        `Proposed fix did not change "${fix.filename}" — old_code snippet was not found in the file. Skipping fix.`,
+        `Proposed fix did not change "${fix.filename}". The old_code snippet was not found in the file. Skipping fix.`,
       );
     }
 

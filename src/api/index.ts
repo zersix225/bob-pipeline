@@ -6,14 +6,12 @@ import type { PipelineEvent } from "../lib/types";
 import { githubWebhooksMiddleware } from "../middleware";
 import { addEvent, getEvents, updateEvent } from "../store";
 import type { HonoEnv } from "../types";
-import "dotenv/config";
-import { askGranite } from "../services/granite";
 
 const api = new Hono<HonoEnv>();
 
 // Dashboard data endpoint — polled by the frontend every 3s
-api.get("/events", (c) => {
-  return c.json(getEvents());
+api.get("/events", async (c) => {
+  return c.json(await getEvents(c.env.DB));
 });
 
 // Manual trigger endpoint — called from CI workflow curl step or for testing
@@ -44,7 +42,7 @@ api.post("/bobops/trigger", async (c) => {
     ],
   };
 
-  addEvent(event);
+  await addEvent(c.env.DB, event);
 
   const healerEnv: HealerEnv = {
     GITHUB_API_TOKEN: c.env.GITHUB_API_TOKEN,
@@ -54,8 +52,11 @@ api.post("/bobops/trigger", async (c) => {
     SLACK_WEBHOOK_URL: c.env.SLACK_WEBHOOK_URL,
   };
 
+  const db = c.env.DB;
   c.executionCtx.waitUntil(
-    runHealingPipeline(event, owner, repo, healerEnv, updateEvent),
+    runHealingPipeline(event, owner, repo, healerEnv, (id, patch) =>
+      updateEvent(db, id, patch),
+    ),
   );
 
   return c.json({ ok: true, eventId: event.id });
@@ -66,7 +67,7 @@ api.use("/github/webhook", githubWebhooksMiddleware);
 
 api.post("/github/webhook", async (c) => {
   const webhooks = c.var.webhooks;
-  let payloadResult = {};
+
   webhooks.on("workflow_run.completed", ({ payload }) => {
     if (payload.workflow_run.conclusion !== "failure") return;
 
@@ -90,8 +91,6 @@ api.post("/github/webhook", async (c) => {
       ],
     };
 
-    addEvent(event);
-
     const healerEnv: HealerEnv = {
       GITHUB_API_TOKEN: c.env.GITHUB_API_TOKEN,
       WATSONX_API_KEY: c.env.WATSONX_API_KEY,
@@ -100,24 +99,17 @@ api.post("/github/webhook", async (c) => {
       SLACK_WEBHOOK_URL: c.env.SLACK_WEBHOOK_URL,
     };
 
-    // Fire background healing — does not block the webhook 201 response
+    const db = c.env.DB;
     c.executionCtx.waitUntil(
-      runHealingPipeline(event, owner, repo, healerEnv, updateEvent),
+      (async () => {
+        await addEvent(db, event);
+        await runHealingPipeline(event, owner, repo, healerEnv, (id, patch) =>
+          updateEvent(db, id, patch),
+        );
+      })(),
     );
   });
 
-  webhooks.on(
-    ["fork", "issues.opened", "star.created", "watch.started"],
-    ({ name, payload }) => {
-      console.log("event:", name);
-      console.log("payload:",payload);
-      payloadResult = payload;
-    },
-  );
-  const answer = await askGranite(`what is the error of the payload ${payloadResult}`);
-  console.log(answer);
-  // Return response after registering webhook handler
-  // The middleware already handles verification and sends 201/400 responses
   return c.text("Webhook handler registered", 200);
 });
 

@@ -1,72 +1,107 @@
-# Hono Github Tracker
+# BobOps
 
-> Measure interactions on your Github repositories! Reach out to your fans!
+Self-healing CI/CD agent. When a GitHub Actions workflow fails, Bob fetches
+the run logs and changed files, asks IBM watsonx.ai (Granite) to localize the
+root cause, opens a fix PR, and posts a Slack summary. Every event is
+persisted to Cloudflare D1 so the dashboard survives restarts.
 
-Hono Github Tracker is a simple app to track interactions on your Github
-repositories. It listens to Github Webhooks and stores the events in a database.
+## Stack
+
+- Hono on Cloudflare Workers (`wrangler dev`)
+- Cloudflare D1 for event persistence (local SQLite file under `.wrangler/state/`)
+- IBM watsonx.ai (`ibm/granite-4-h-small`) for root-cause analysis
+- GitHub Octokit for log retrieval and PR creation
+- Slack Incoming Webhooks for notifications
+- Plain HTML/CSS dashboard served from `src/index.ts`
 
 ## Getting started
 
-This app is using the [HONC](https://honc.dev) stack - this includes
-[Neon](https://neon.tech), for which you will need to create an account for.
+### 1. Configure secrets
 
-As we're interacting with both Github Webhooks and the Github API, you will
-need to create/add an API token and [set a webhook secret](https://docs.github.com/en/webhooks/using-webhooks/creating-webhooks#creating-a-repository-webhook) on the repo you'd like
-to monitor.
+Create `.dev.vars` in the project root:
 
-> [!note]
-> Make sure you configure the webhook to listen to the changes you're
-> interested in, and update the array of the event listener in
-> `src/api/index.ts`.
+```ini
+GITHUB_WEBHOOK_SECRET=replace-me
+GITHUB_API_TOKEN=ghp_xxx
 
-To get started locally, you will need to create a `.dev.vars` file in the root
-of the project, with the following three variables:
+# Optional: omit to run Bob in demo-stub mode
+WATSONX_API_KEY=
+WATSONX_PROJECT_ID=
+WATSONX_URL=https://us-south.ml.cloud.ibm.com
 
-```shell
-# .dev.vars
-DATABASE_URL=postgresql://neondb_owner:...
-GITHUB_API_TOKEN=github_...
-GITHUB_WEBHOOK_SECRET=...
+# Optional: Slack notifications
+SLACK_WEBHOOK_URL=
 ```
 
-> [!tip]
-> If using `bun` feels too edgy, just use your favourite package manager.
+### 2. D1 binding
 
-```shell
-bun install
-bun dev
+`wrangler.jsonc` already declares a `DB` binding for a local database named
+`bobops-events`. `wrangler dev` creates the SQLite file automatically; the
+events table is created on first request.
+
+For Cloudflare deploys, provision a real D1 database and paste the returned
+id into `wrangler.jsonc`:
+
+```bash
+pnpm wrangler d1 create bobops-events
+# copy the database_id into wrangler.jsonc
+pnpm wrangler d1 migrations apply bobops-events --remote
 ```
 
-Your app will start on `localhost:8787`.
+### 3. Run
 
-### Receiving Webhooks
-
-To receive webhooks, you will need to expose your local server to the internet.
-You could use Ngrok, VS Code Ports or any other tool you're comfortable with.
-
-Hono Github Tracker is using FPX for local development, which has a neat feature
-to [proxy Webhook requests](https://fiberplane.com/docs/features/webhooks/) to
-your local development server.
-
-To make use of FPX proxying, run FPX in a separate terminal:
-
-```shell
-bun studio
+```bash
+pnpm install
+pnpm dev
 ```
 
-> [!important]
-> When using any proxy tool, make sure to append the URL with
-> `/api/github/webhook`
+Open `http://localhost:8787` for the dashboard.
 
-## Dashboard
+## Endpoints
 
-The app exposes a dashboard on `localhost:8787/` with basic information about
-the repositories you're tracking.
+- `GET /` Dashboard UI
+- `GET /api/events` JSON list of recent pipeline events (polled at 3s)
+- `POST /api/bobops/trigger` Manual trigger from CI. Body: `repo`, `branch`, `commit`, `run_id`
+- `POST /api/github/webhook` GitHub `workflow_run` webhook receiver
 
-## TODO
+## Receiving GitHub webhooks locally
 
-This app is under active (though not always fast) development. If you're running
-into issues, have questions or suggestions, feel free to open an issue.
+Expose `localhost:8787` to the public internet with your tool of choice
+(ngrok, VS Code Tunnels, Cloudflare quick tunnel, etc.) and register the
+forwarded URL `https://your-tunnel/api/github/webhook` with the repository.
+The webhook must send `workflow_run` events and be signed with the
+`GITHUB_WEBHOOK_SECRET`.
 
-- [ ] [Authenticated dashboard](https://github.com/oscarvz/hono-github-tracker/issues/14):
-      we shouldn't expose the dashboard to the public.
+## How Bob heals a pipeline
+
+1. `workflow_run.completed` webhook arrives with `conclusion = "failure"`.
+2. Event is stored in D1 with status `detecting`.
+3. `runHealingPipeline` (`src/lib/healer.ts`) fetches logs, changed files,
+   and the repository tree from GitHub.
+4. `analyzeWithWatsonX` (`src/lib/watsonx.ts`) asks Granite for a structured
+   root cause and proposed code change. Bob is instructed to keep output
+   professional, with no emojis and no em dashes.
+5. If confidence is above 50%, a fix branch is opened and a PR is filed.
+   If branch protection allows it, the PR is auto merged.
+6. A Slack summary is posted when `SLACK_WEBHOOK_URL` is configured.
+7. The dashboard polls `/api/events` and renders the timeline.
+
+## Project layout
+
+```
+src/
+  api/index.ts             Hono routes (events, trigger, webhook)
+  index.ts                 Worker entry + dashboard HTML
+  lib/
+    healer.ts              Healing pipeline orchestration
+    github.ts              Log fetch + PR creation
+    watsonx.ts             Granite prompt + response parsing
+    slack.ts               Slack block message
+    types.ts               PipelineEvent and related types
+  middleware/
+    githubWebhooksMiddleware.ts
+  store.ts                 D1-backed event store
+  types.ts                 HonoEnv bindings
+migrations/
+  0001_create_events.sql   Events table schema
+```

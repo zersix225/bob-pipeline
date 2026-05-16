@@ -5,6 +5,7 @@ type Variables = {
 };
 
 type EnvVars = {
+  DB: D1Database;
   GITHUB_WEBHOOK_SECRET: string;
   GITHUB_API_TOKEN: string;
   WATSONX_API_KEY?: string;

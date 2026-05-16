@@ -18,18 +18,21 @@ export async function runHealingPipeline(
   owner: string,
   repo: string,
   env: HealerEnv,
-  updateEvent: (id: string, patch: Partial<PipelineEvent>) => void,
+  updateEvent: (
+    id: string,
+    patch: Partial<PipelineEvent>,
+  ) => void | Promise<void>,
 ): Promise<void> {
   const startTime = Date.now();
 
-  const step = (label: string, status: "done" | "error") => {
+  const step = async (label: string, status: "done" | "error") => {
     event.steps.push({ label, timestamp: new Date().toISOString(), status });
-    updateEvent(event.id, { steps: [...event.steps] });
+    await updateEvent(event.id, { steps: [...event.steps] });
   };
 
   try {
     // Phase 1: Fetch logs + repo context
-    updateEvent(event.id, { status: "detecting" });
+    await updateEvent(event.id, { status: "detecting" });
     const context = await fetchPipelineContext(
       env.GITHUB_API_TOKEN,
       owner,
@@ -38,32 +41,32 @@ export async function runHealingPipeline(
       event.commitSha,
       event.branch,
     );
-    step(
+    await step(
       `Fetched logs and repo context (${Object.keys(context.changedFiles).length} changed files)`,
       "done",
     );
 
     // Phase 2: Analyze with WatsonX
-    updateEvent(event.id, { status: "analyzing" });
+    await updateEvent(event.id, { status: "analyzing" });
     const analysis = await analyzeWithWatsonX(
       context,
       env.WATSONX_API_KEY ?? "",
       env.WATSONX_PROJECT_ID ?? "",
       env.WATSONX_URL ?? "https://us-south.ml.cloud.ibm.com",
     );
-    step(
-      `Root cause identified (confidence: ${analysis.confidence}%) — ${analysis.root_cause.slice(0, 80)}`,
+    await step(
+      `Root cause identified at ${analysis.confidence}% confidence. ${analysis.root_cause.slice(0, 80)}`,
       "done",
     );
-    updateEvent(event.id, { analysis });
+    await updateEvent(event.id, { analysis });
 
     // Phase 3: Create fix PR if confidence meets threshold
     if (analysis.confidence < CONFIDENCE_THRESHOLD) {
-      step(
-        `Confidence ${analysis.confidence}% below threshold (${CONFIDENCE_THRESHOLD}%) — skipping PR`,
+      await step(
+        `Confidence ${analysis.confidence}% is below the ${CONFIDENCE_THRESHOLD}% threshold. Skipping PR.`,
         "error",
       );
-      updateEvent(event.id, {
+      await updateEvent(event.id, {
         status: "error",
         error: `Confidence too low: ${analysis.confidence}%`,
         durationMs: Date.now() - startTime,
@@ -71,7 +74,7 @@ export async function runHealingPipeline(
       return;
     }
 
-    updateEvent(event.id, { status: "fixing" });
+    await updateEvent(event.id, { status: "fixing" });
     const { url: prUrl, autoMerged } = await createFixPR(
       env.GITHUB_API_TOKEN,
       owner,
@@ -80,14 +83,14 @@ export async function runHealingPipeline(
       event.commitSha,
     );
 
-    step(
+    await step(
       autoMerged
         ? `Fix auto-merged into main (${((Date.now() - startTime) / 1000).toFixed(0)}s)`
         : `PR opened: ${prUrl}`,
       "done",
     );
 
-    updateEvent(event.id, {
+    await updateEvent(event.id, {
       status: autoMerged ? "auto_merged" : "pr_created",
       prUrl,
       autoMerged,
@@ -103,14 +106,14 @@ export async function runHealingPipeline(
         autoMerged,
         `${owner}/${repo}`,
       );
-      step("Slack notification sent", "done");
-      updateEvent(event.id, { status: "notified" });
+      await step("Slack notification sent", "done");
+      await updateEvent(event.id, { status: "notified" });
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("BobOps healing pipeline failed:", msg);
-    step(`Error: ${msg}`, "error");
-    updateEvent(event.id, {
+    await step(`Error: ${msg}`, "error");
+    await updateEvent(event.id, {
       status: "error",
       error: msg,
       durationMs: Date.now() - startTime,
