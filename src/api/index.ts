@@ -10,11 +10,16 @@ api.use("/github/webhook", githubWebhooksMiddleware);
 api.post("/github/webhook", async (c) => {
   const webhooks = c.var.webhooks;
 
+  webhooks.on("workflow_run.completed", ({ payload }) => {
+    if (payload.workflow_run.conclusion === "failure") {
+      console.log("Workflow failed");
+    }
+  });
+
   webhooks.on(
-    ["fork", "issues.opened", "star.created", "watch.started", "pull_request.opened"],
-    ({ payload, name }) => {
+    ["fork", "issues.opened", "star.created", "watch.started"],
+    ({ name, payload }) => {
       console.log("event:", name);
-      console.log("payload:", payload);
     },
   );
 });
