@@ -90,7 +90,6 @@ export async function createFixPR(
   commitSha: string,
 ): Promise<{ url: string; autoMerged: boolean }> {
   const octokit = new Octokit({ auth: token });
-  const branchName = `bobops/auto-fix-${commitSha.slice(0, 7)}`;
   const fix = analysis.fix;
 
   // Get main branch HEAD SHA
@@ -99,13 +98,17 @@ export async function createFixPR(
     { owner, repo, ref: "heads/main" },
   );
 
-  // Create fix branch
-  await octokit.request("POST /repos/{owner}/{repo}/git/refs", {
+  // Create a unique fix branch. The previous scheme used the commit SHA only,
+  // so re-triggering for the same commit raised 422 "Reference already exists".
+  // Appending a random suffix guarantees uniqueness, and we retry once with a
+  // fresh suffix in the rare case of a collision.
+  const branchName = await createUniqueFixBranch(
+    octokit,
     owner,
     repo,
-    ref: `refs/heads/${branchName}`,
-    sha: baseRef.data.object.sha,
-  });
+    commitSha,
+    baseRef.data.object.sha,
+  );
 
   // Fetch current file content and apply fix
   const fileRes = (await octokit.request(
@@ -157,6 +160,43 @@ export async function createFixPR(
   }
 
   return { url: pr.data.html_url, autoMerged: false };
+}
+
+async function createUniqueFixBranch(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  commitSha: string,
+  baseSha: string,
+): Promise<string> {
+  const shortSha = commitSha.slice(0, 7);
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const suffix = randomSuffix();
+    const branchName = `bobops/auto-fix-${shortSha}-${suffix}`;
+    try {
+      await octokit.request("POST /repos/{owner}/{repo}/git/refs", {
+        owner,
+        repo,
+        ref: `refs/heads/${branchName}`,
+        sha: baseSha,
+      });
+      return branchName;
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status !== 422) throw err;
+      // 422 = "Reference already exists" — extremely unlikely with random suffix,
+      // but if it does happen, try again with a fresh one.
+    }
+  }
+  throw new Error("createUniqueFixBranch: exhausted retries after 422 collisions");
+}
+
+function randomSuffix(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID().slice(0, 8);
+  }
+  return Math.random().toString(36).slice(2, 10);
 }
 
 function buildPRBody(analysis: BobAnalysis): string {

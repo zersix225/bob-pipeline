@@ -1,7 +1,25 @@
 import type { BobAnalysis, PipelineContext } from "./types";
 
-const WATSONX_MODEL = "ibm/granite-3-8b-instruct";
+const WATSONX_MODEL = "ibm/granite-4-h-small";
 const CONFIDENCE_THRESHOLD = 50;
+
+async function getIamAccessToken(apiKey: string): Promise<string> {
+  const res = await fetch("https://iam.cloud.ibm.com/identity/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ibm:params:oauth:grant-type:apikey",
+      apikey: apiKey,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `IAM token exchange failed: ${res.status} ${await res.text()}`,
+    );
+  }
+  const data = (await res.json()) as { access_token: string };
+  return data.access_token;
+}
 
 export async function analyzeWithWatsonX(
   context: PipelineContext,
@@ -14,6 +32,14 @@ export async function analyzeWithWatsonX(
     return getDemoAnalysis(context);
   }
 
+  let accessToken: string;
+  try {
+    accessToken = await getIamAccessToken(apiKey);
+  } catch (err) {
+    console.error("WatsonX IAM exchange failed:", err);
+    return getDemoAnalysis(context);
+  }
+
   const prompt = buildPrompt(context);
 
   const response = await fetch(
@@ -22,7 +48,7 @@ export async function analyzeWithWatsonX(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${accessToken}`,
       },
       body: JSON.stringify({
         model_id: WATSONX_MODEL,
