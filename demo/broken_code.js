@@ -2,6 +2,7 @@
 // BobOps will detect the failure, identify the root cause, and open a fix PR.
 
 function formatUser(user) {
+  if (!user) return 'Unknown (unknown@example.com)';
   return `${user.name} (${user.email})`;
 }
 
